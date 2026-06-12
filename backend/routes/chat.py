@@ -90,6 +90,8 @@ class ChatResponse(BaseModel):
     internet_budget: InternetBudget | None = None
     web_used: bool = False
     encoderfile: dict = {}
+    tool_evidence: list[dict] = []
+    primary_source: str = "local"
 
 
 class AddMcpdToolRequest(BaseModel):
@@ -127,7 +129,7 @@ async def encoder_status() -> dict:
 
     health = agent_service.health()
     retrieval = get_encoder_retrieval_status()
-    demo_text = "PrivateLens AI keeps your documents local and secure."
+    demo_text = "FoxZilla keeps your documents local and secure."
     prediction = None
     if health.get("encoderfile", {}).get("ok"):
         try:

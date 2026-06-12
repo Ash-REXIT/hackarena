@@ -308,9 +308,67 @@ def should_use_web(confidence: int, query: str, matches: list[DocumentChunk] | N
     return confidence < int(CONFIDENCE_THRESHOLD * 100)
 
 
+def split_query_parts(query: str) -> list[str]:
+    parts = re.split(r"\s+and\s+|,\s*|\?\s*", query, flags=re.IGNORECASE)
+    cleaned: list[str] = []
+    for part in parts:
+        piece = part.strip().rstrip("?")
+        piece = re.sub(r"^and\s+", "", piece, flags=re.IGNORECASE)
+        if piece:
+            cleaned.append(piece)
+    return cleaned if cleaned else [query.strip()]
+
+
+def is_compound_query(query: str) -> bool:
+    return len(split_query_parts(query)) > 1
+
+
+def pick_web_subquery(query: str, matches: list[DocumentChunk] | None = None) -> str:
+    """Focus web search on the part of a compound question not answered locally."""
+    parts = split_query_parts(query)
+    if len(parts) <= 1:
+        return query
+
+    web_markers = (
+        "who is",
+        "ceo",
+        "president",
+        "founder",
+        "latest",
+        "news",
+        "when did",
+        "where is",
+        "how much",
+        "price of",
+    )
+    for part in parts:
+        lowered = part.lower()
+        if any(marker in lowered for marker in web_markers):
+            return part
+
+    if matches:
+        local_text = " ".join(match.text.lower() for match in matches)
+        for part in parts:
+            tokens = _tokenize(part, strip_stopwords=False)
+            overlap = sum(1 for token in tokens if token in local_text)
+            if overlap < max(1, len(tokens) // 3):
+                return part
+
+    return max(parts, key=len)
+
+
 def is_live_data_query(query: str) -> bool:
     lowered = query.lower()
-    time_markers = ("time in", "what time", "current time", "timezone", "convert time")
+    time_markers = (
+        "time in",
+        "what time",
+        "what is the time",
+        "what's the time",
+        "current time",
+        "timezone",
+        "convert time",
+        "time is it",
+    )
     return any(marker in lowered for marker in time_markers)
 
 

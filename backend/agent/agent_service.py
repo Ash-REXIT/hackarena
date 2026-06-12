@@ -18,6 +18,14 @@ from mcpd.mcp_client import MCPDClient
 from tools import ToolRegistry
 
 
+def normalize_response_text(text: str) -> str:
+    """Convert literal \\n from small LLMs into real line breaks."""
+    if not text:
+        return text
+    cleaned = text.replace("\\n", "\n").replace("\\t", "\t").strip()
+    return cleaned
+
+
 class AgentService:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -104,8 +112,8 @@ class AgentService:
         pipeline = PrivateLensPipeline()
         matches, confidence, boundary, encoder_status = pipeline.run_retrieval(query)
         decision = pipeline.run_decision(query, confidence, matches, boundary)
-        local_context = pipeline.run_local_stage(matches)
-        web_context, web_used = pipeline.run_web_stage(query, decision["use_web"])
+        local_context = pipeline.run_local_stage(matches, live_data=decision["live_data"])
+        web_context, web_used = pipeline.run_web_stage(query, decision["use_web"], matches)
 
         answer_prompt = PrivateLensPipeline.build_answer_prompt(
             query=query,
@@ -130,6 +138,8 @@ class AgentService:
         elif not isinstance(final_output, str):
             final_output = str(final_output)
 
+        final_output = normalize_response_text(final_output)
+
         usage = self._extract_tool_usage(trace)
         spans_summary = []
         if hasattr(trace, "spans"):
@@ -152,6 +162,7 @@ class AgentService:
             mcp_tools=usage["mcp_tools_used"],
             local_tools=usage["local_tools_used"],
             encoder_status=encoder_status,
+            tool_calls=usage["tool_calls"],
         )
 
         return {
@@ -193,7 +204,7 @@ class AgentService:
         from documents.store import list_documents_with_meta, get_encoder_retrieval_status
 
         return {
-            "app": "PrivateLens AI",
+            "app": "FoxZilla",
             "tagline": "Your Documents First. The Internet Second.",
             "llm": {"ok": llm_ok, "api_base": self.settings.llm_api_base, "error": llm_error},
             "encoderfile": {

@@ -1,3 +1,14 @@
+Write-Host "Building FoxZilla frontend..."
+Set-Location "$PSScriptRoot\frontend"
+if (-not (Test-Path node_modules)) {
+    npm install
+}
+npm run build
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Frontend build failed."
+    exit 1
+}
+
 Write-Host "Local Agent startup checks..."
 
 $llmOk = $false
