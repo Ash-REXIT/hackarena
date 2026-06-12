@@ -10,6 +10,7 @@ from typing import Any
 from mcpd.mcp_client import MCPDClient
 from tools.document_tool import list_private_documents, search_private_documents
 from tools.encoder_tool import analyze_text, classify_sentiment, get_text_embeddings
+from tools.fetch_tool import fetch_url
 from tools.maps_tool import geocode_location
 from tools.time_tool import convert_time, get_current_time
 from tools.weather_tool import get_weather
@@ -26,6 +27,7 @@ LOCAL_TOOL_BUILDERS: dict[str, Callable[[], Callable[..., str]]] = {
     "analyze_text": lambda: analyze_text,
     "classify_sentiment": lambda: classify_sentiment,
     "get_text_embeddings": lambda: get_text_embeddings,
+    "fetch_url": lambda: fetch_url,
 }
 
 DEFAULT_LOCAL_TOOLS = [
@@ -74,7 +76,8 @@ class ToolRegistry:
         entries.extend(
             [
                 {"type": "mcpd", "server": "time", "tool": "get_current_time", "enabled": True},
-                {"type": "mcpd", "server": "time", "tool": "convert_time", "enabled": False},
+                {"type": "mcpd", "server": "time", "tool": "convert_time", "enabled": True},
+                {"type": "mcpd", "server": "fetch", "tool": "fetch", "enabled": True},
             ]
         )
         return entries

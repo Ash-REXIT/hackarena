@@ -1,5 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
+import {
+  findLatestAgentRun,
+  normalizeAgentRun,
+  summarizeAgentRunForStorage,
+} from "../utils/agentRun";
 
 const STORAGE_KEY = "foxzilla_state_v2";
 
@@ -12,8 +17,12 @@ function loadState() {
 }
 
 function saveState(partial) {
-  const current = loadState();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...partial }));
+  try {
+    const current = loadState();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...partial }));
+  } catch {
+    // Ignore quota errors; in-memory state still works for the session.
+  }
 }
 
 const defaultSettings = {
@@ -33,7 +42,9 @@ export function AppProvider({ children }) {
   const [conversations, setConversations] = useState(persisted.conversations || []);
   const [activeChatId, setActiveChatId] = useState(persisted.activeChatId || null);
   const [analytics, setAnalytics] = useState(persisted.analytics || []);
-  const [lastAgentRun, setLastAgentRun] = useState(persisted.lastAgentRun || null);
+  const [lastAgentRun, setLastAgentRun] = useState(
+    () => summarizeAgentRunForStorage(normalizeAgentRun(persisted.lastAgentRun)) || null
+  );
   const [settings, setSettings] = useState({ ...defaultSettings, ...persisted.settings });
   const [loading, setLoading] = useState(false);
 
@@ -65,6 +76,22 @@ export function AppProvider({ children }) {
   useEffect(() => {
     saveState({ conversations, activeChatId, analytics, lastAgentRun, settings });
   }, [conversations, activeChatId, analytics, lastAgentRun, settings]);
+
+  useEffect(() => {
+    const repaired = findLatestAgentRun(conversations, lastAgentRun);
+    if (
+      repaired &&
+      repaired.timeline?.length > 0 &&
+      !(lastAgentRun?.timeline?.length > 0)
+    ) {
+      setLastAgentRun(summarizeAgentRunForStorage(repaired));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const latestAgentRun = useMemo(
+    () => findLatestAgentRun(conversations, lastAgentRun),
+    [conversations, lastAgentRun]
+  );
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === activeChatId) || null,
@@ -125,7 +152,7 @@ export function AppProvider({ children }) {
           webPct: data.source_breakdown?.web_verification ?? 0,
         };
         setAnalytics((prev) => [...prev.slice(-49), point]);
-        setLastAgentRun(data);
+        setLastAgentRun(summarizeAgentRunForStorage(data));
         return data;
       } finally {
         setLoading(false);
@@ -161,6 +188,7 @@ export function AppProvider({ children }) {
     analytics,
     analyticsSummary,
     lastAgentRun,
+    latestAgentRun,
     settings,
     loading,
     setActiveChatId,

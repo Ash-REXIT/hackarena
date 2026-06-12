@@ -14,9 +14,10 @@ const DEFAULT_AGENTS = [
 ];
 
 export default function AgentsPage() {
-  const { lastAgentRun } = useApp();
-  const agents = lastAgentRun?.agents || DEFAULT_AGENTS;
-  const timeline = lastAgentRun?.timeline || [];
+  const { latestAgentRun } = useApp();
+  const agents = latestAgentRun?.agents?.length ? latestAgentRun.agents : DEFAULT_AGENTS;
+  const timeline = latestAgentRun?.timeline ?? [];
+  const hasRun = Boolean(latestAgentRun?.agents?.some((a) => a.status !== "pending"));
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 space-y-8">
@@ -25,7 +26,7 @@ export default function AgentsPage() {
           <h1 className="text-2xl font-bold mb-1">Agent Workflow</h1>
           <p className="text-gray-400 text-sm">Any-Agent multi-agent pipeline visualization for judges.</p>
         </div>
-        {!lastAgentRun && (
+        {!hasRun && (
           <Link to="/chat" className="btn-primary text-sm">
             Run a query to see live agents
           </Link>

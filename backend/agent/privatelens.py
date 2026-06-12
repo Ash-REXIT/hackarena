@@ -12,6 +12,9 @@ from documents.store import (
     compute_confidence,
     get_encoder_retrieval_status,
     is_live_data_query,
+    is_fetch_url_query,
+    compound_query_needs_web,
+    part_needs_web,
     list_documents,
     pick_web_subquery,
     search_documents,
@@ -70,8 +73,9 @@ class PrivateLensPipeline:
         encoder_status = get_encoder_retrieval_status()
         self._add_timeline(encoder_status["message"], "Retriever Agent · Encoderfile")
 
-        if is_live_data_query(query):
-            self._add_timeline("Live data query — local document search skipped", "Retriever Agent")
+        if is_live_data_query(query) or is_fetch_url_query(query):
+            skip_label = "MCP fetch" if is_fetch_url_query(query) else "MCP live data"
+            self._add_timeline(f"{skip_label} query — local document search skipped", "Retriever Agent")
             self._set_agent("Retriever Agent", "complete", "Skipped (MCP)")
             self._set_agent("Confidence Agent", "active", "Not applicable for live data")
             self._add_timeline("Confidence = N/A (MCP tool will answer)", "Confidence Agent")
@@ -110,6 +114,7 @@ class PrivateLensPipeline:
         self._set_agent("Decision Agent", "active", "Evaluating internet need")
         use_web = should_use_web(confidence, query, matches)
         live_data = is_live_data_query(query)
+        fetch_url = is_fetch_url_query(query)
 
         if live_data:
             use_web = False
@@ -118,8 +123,18 @@ class PrivateLensPipeline:
             self._set_agent("Web Agent", "skipped", "MCP handles live time")
             self._set_agent("Local Agent", "skipped", "Not used for live time")
             boundary = "live_mcp"
+        elif fetch_url:
+            use_web = False
+            reason = "URL fetch query — MCP fetch tool preferred over web search."
+            self._add_timeline("Internet Search Skipped (MCP fetch tool)", "Decision Agent")
+            self._set_agent("Web Agent", "skipped", "MCP fetch handles URL")
+            self._set_agent("Local Agent", "skipped", "Not used for URL fetch")
+            boundary = "live_mcp"
         elif use_web:
-            reason = "Local confidence low or query needs fresh public information."
+            if compound_query_needs_web(query, matches) and confidence >= 50:
+                reason = "Multi-part question: local docs for one part, web search for the rest."
+            else:
+                reason = "Local confidence low or query needs fresh public information."
             self._add_timeline("Internet Search Required", "Decision Agent")
         else:
             reason = "Local confidence high. Internet not required."
@@ -130,14 +145,23 @@ class PrivateLensPipeline:
         return {
             "use_web": use_web,
             "live_data": live_data,
+            "fetch_url": fetch_url,
             "reason": reason,
             "boundary": boundary,
         }
 
-    def run_local_stage(self, matches: list[DocumentChunk], *, live_data: bool = False) -> str:
-        if live_data:
-            self._set_agent("Local Agent", "skipped", "Not used for live time")
-            return "Local documents not used for this live time query."
+    def run_local_stage(
+        self,
+        matches: list[DocumentChunk],
+        *,
+        live_data: bool = False,
+        fetch_url: bool = False,
+    ) -> str:
+        if live_data or fetch_url:
+            detail = "Not used for URL fetch" if fetch_url else "Not used for live time"
+            self._set_agent("Local Agent", "skipped", detail)
+            label = "URL fetch" if fetch_url else "live time"
+            return f"Local documents not used for this {label} query."
         self._set_agent("Local Agent", "active", "Preparing local evidence")
         if not matches:
             self._set_agent("Local Agent", "complete", "No local matches")
@@ -178,6 +202,7 @@ class PrivateLensPipeline:
         confidence: int,
         decision_reason: str,
         live_data: bool,
+        fetch_url: bool = False,
     ) -> str:
         has_local = (
             local_context
@@ -204,25 +229,39 @@ class PrivateLensPipeline:
             sections.extend(
                 [
                     "",
-                    "This is a live time/timezone question. You MUST call get_current_time MCP tool.",
+                    "This is a live time/timezone question. Use get_current_time or convert_time MCP tools as appropriate.",
                     "Do NOT use local document evidence for the time answer.",
-                    "End with: Source: MCP get_current_time",
+                    "End with: Source: MCP time tool",
                 ]
             )
-        elif is_hybrid:
+        elif fetch_url:
             sections.extend(
                 [
                     "",
-                    "MULTI-PART HYBRID QUESTION — you MUST answer EVERY part:",
-                    f"- Question has {len(parts)} part(s): " + " | ".join(parts),
-                    "- Use LOCAL evidence for parts found in private documents (e.g. name).",
-                    "- Use WEB evidence above for parts NOT in local docs (e.g. CEO of Google).",
-                    "- Do NOT stop after answering only the first part.",
+                    "The user wants content from a URL. You MUST call the fetch MCP tool with that URL.",
+                    "Do NOT use local documents for this answer.",
+                    "End with: Source: MCP fetch",
+                ]
+            )
+        elif is_hybrid:
+            local_parts = []
+            web_parts = []
+            for part in parts:
+                if part_needs_web(part):
+                    web_parts.append(part)
+                else:
+                    local_parts.append(part)
+            sections.extend(
+                [
                     "",
-                    "Example format:",
-                    "  Your name is FoxZilla.",
-                    "  The CEO of Google is Sundar Pichai.",
-                    "  Source: lk.txt (name); Web (CEO of Google)",
+                    "MULTI-PART HYBRID QUESTION — answer EVERY part below using ONLY the evidence above.",
+                    f"- All parts: {' | '.join(parts)}",
+                    f"- Answer from LOCAL evidence: {' | '.join(local_parts) if local_parts else '(none)'}",
+                    f"- Answer from WEB evidence: {' | '.join(web_parts) if web_parts else '(none)'}",
+                    "- Do NOT invent facts. Do NOT copy placeholder examples.",
+                    "- Quote or summarize the actual local document excerpt for the local part(s).",
+                    "- Use the web evidence for public facts (people, roles, news).",
+                    "- End with: Source: <filename> (local part); Web (<web part topic>)",
                 ]
             )
         elif web_context:
@@ -237,8 +276,9 @@ class PrivateLensPipeline:
             sections.extend(
                 [
                     "",
-                    "Answer directly, then cite source on the last line.",
-                    "Example: Your name is FoxZilla. / Source: lk.txt",
+                    "Answer directly from the local evidence above only.",
+                    "Do NOT invent facts or copy placeholder text.",
+                    "End with: Source: <document filename>",
                 ]
             )
 
@@ -344,9 +384,11 @@ class PrivateLensPipeline:
 
         tool_evidence = self.build_tool_evidence(tool_calls)
         live_data = decision.get("live_data", False)
+        fetch_url = decision.get("fetch_url", False)
+        mcp_query = live_data or fetch_url
         has_local = bool(matches) and matches[0].score >= 0.25
 
-        if mcp_tools or tool_evidence or (live_data and not web_used):
+        if mcp_tools or tool_evidence or (mcp_query and not web_used):
             primary_source = "mcp"
         elif web_used and has_local and not live_data:
             primary_source = "hybrid"
@@ -367,7 +409,7 @@ class PrivateLensPipeline:
             matches=matches,
         )
 
-        use_doc_evidence = primary_source in {"local", "hybrid"} and not live_data
+        use_doc_evidence = primary_source in {"local", "hybrid"} and not mcp_query
         doc_evidence = self.build_evidence(matches) if use_doc_evidence else []
         documents_used = sorted({match.source for match in matches}) if use_doc_evidence else []
         local_sources = [{"name": name, "type": "local"} for name in documents_used]

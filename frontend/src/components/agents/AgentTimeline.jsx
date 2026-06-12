@@ -13,7 +13,7 @@ export default function AgentTimeline({ timeline = [] }) {
     <div className="card p-4 space-y-0">
       {timeline.map((step, i) => (
         <motion.div
-          key={`${step.time}-${i}`}
+          key={`${step.agent}-${step.event}-${i}`}
           initial={{ opacity: 0, x: -8 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: i * 0.03 }}

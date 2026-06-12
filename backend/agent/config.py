@@ -15,6 +15,7 @@ class Settings(BaseModel):
     llm_api_base: str = Field(default="http://localhost:8080/v1")
     llm_api_key: str = Field(default="dummy")
     llm_model_id: str = Field(default="openai:Qwen3.5-0.8B-Q8_0.gguf")
+    llm_max_turns: int = Field(default=3, ge=1, le=12)
     encoderfile_base_url: str = Field(default="http://localhost:8081")
     encoderfile_binary: str = Field(
         default="/home/ashwin_pranav_m/mozilla-hackathon/encoderfile/build/sentiment-analyzer.encoderfile"
@@ -31,6 +32,7 @@ def get_settings() -> Settings:
         llm_api_base=os.getenv("LLM_API_BASE", "http://localhost:8080/v1"),
         llm_api_key=os.getenv("LLM_API_KEY", "dummy"),
         llm_model_id=os.getenv("LLM_MODEL_ID", "openai:Qwen3.5-0.8B-Q8_0.gguf"),
+        llm_max_turns=int(os.getenv("LLM_MAX_TURNS", "3")),
         encoderfile_base_url=os.getenv("ENCODERFILE_BASE_URL", "http://localhost:8081"),
         encoderfile_binary=os.getenv(
             "ENCODERFILE_BINARY",

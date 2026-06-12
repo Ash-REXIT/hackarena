@@ -139,7 +139,7 @@ export default function ChatWindow({ messages, loading }) {
       {loading && (
         <div className="flex items-center gap-2 text-gray-500 text-sm">
           <Loader2 className="w-4 h-4 animate-spin text-accent" />
-          FoxZilla agents working… (local model may take 1–3 min)
+          FoxZilla agents working… (local model, usually under ~1 min)
         </div>
       )}
       <div ref={bottomRef} />

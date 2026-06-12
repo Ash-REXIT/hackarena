@@ -112,7 +112,11 @@ class AgentService:
         pipeline = PrivateLensPipeline()
         matches, confidence, boundary, encoder_status = pipeline.run_retrieval(query)
         decision = pipeline.run_decision(query, confidence, matches, boundary)
-        local_context = pipeline.run_local_stage(matches, live_data=decision["live_data"])
+        local_context = pipeline.run_local_stage(
+            matches,
+            live_data=decision["live_data"],
+            fetch_url=decision.get("fetch_url", False),
+        )
         web_context, web_used = pipeline.run_web_stage(query, decision["use_web"], matches)
 
         answer_prompt = PrivateLensPipeline.build_answer_prompt(
@@ -122,10 +126,14 @@ class AgentService:
             confidence=confidence,
             decision_reason=decision["reason"],
             live_data=decision["live_data"],
+            fetch_url=decision.get("fetch_url", False),
         )
 
         assert self._agent is not None
-        trace = await self._agent.run_async(answer_prompt, max_turns=6)
+        trace = await self._agent.run_async(
+            answer_prompt,
+            max_turns=self.settings.llm_max_turns,
+        )
         final_output = trace.final_output
         if final_output is None:
             messages = trace.spans_to_messages()
@@ -206,7 +214,12 @@ class AgentService:
         return {
             "app": "FoxZilla",
             "tagline": "Your Documents First. The Internet Second.",
-            "llm": {"ok": llm_ok, "api_base": self.settings.llm_api_base, "error": llm_error},
+            "llm": {
+                "ok": llm_ok,
+                "api_base": self.settings.llm_api_base,
+                "max_turns": self.settings.llm_max_turns,
+                "error": llm_error,
+            },
             "encoderfile": {
                 "ok": encoder_ok,
                 "base_url": self.settings.encoderfile_base_url,

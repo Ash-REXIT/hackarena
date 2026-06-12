@@ -298,6 +298,9 @@ def should_use_web(confidence: int, query: str, matches: list[DocumentChunk] | N
     if any(marker in lowered for marker in live_markers):
         return True
 
+    if compound_query_needs_web(query, matches):
+        return True
+
     if matches:
         top_score = matches[0].score
         if top_score >= CONFIDENCE_THRESHOLD:
@@ -323,27 +326,63 @@ def is_compound_query(query: str) -> bool:
     return len(split_query_parts(query)) > 1
 
 
+WEB_PART_MARKERS = (
+    "who is",
+    "who's",
+    "what is the",
+    "what's the",
+    "ceo of",
+    "ceo ",
+    "president of",
+    "president ",
+    "prime minister",
+    " pm of",
+    " pm ",
+    "minister of",
+    "founder of",
+    "founder ",
+    "latest",
+    "news",
+    "when did",
+    "where is",
+    "how much",
+    "price of",
+    "current ",
+    "today",
+)
+
+
+def part_needs_web(part: str) -> bool:
+    lowered = part.lower()
+    return any(marker in lowered for marker in WEB_PART_MARKERS)
+
+
+def compound_query_needs_web(query: str, matches: list[DocumentChunk] | None = None) -> bool:
+    """True when a multi-part question has at least one part that needs public web data."""
+    parts = split_query_parts(query)
+    if len(parts) <= 1:
+        return False
+
+    for part in parts:
+        if part_needs_web(part):
+            return True
+        if matches:
+            local_text = " ".join(match.text.lower() for match in matches)
+            tokens = _tokenize(part, strip_stopwords=False)
+            overlap = sum(1 for token in tokens if token in local_text)
+            if overlap < max(1, len(tokens) // 3):
+                return True
+    return False
+
+
 def pick_web_subquery(query: str, matches: list[DocumentChunk] | None = None) -> str:
     """Focus web search on the part of a compound question not answered locally."""
     parts = split_query_parts(query)
     if len(parts) <= 1:
         return query
 
-    web_markers = (
-        "who is",
-        "ceo",
-        "president",
-        "founder",
-        "latest",
-        "news",
-        "when did",
-        "where is",
-        "how much",
-        "price of",
-    )
     for part in parts:
-        lowered = part.lower()
-        if any(marker in lowered for marker in web_markers):
+        if part_needs_web(part):
             return part
 
     if matches:
@@ -368,8 +407,20 @@ def is_live_data_query(query: str) -> bool:
         "timezone",
         "convert time",
         "time is it",
+        "what time is",
     )
-    return any(marker in lowered for marker in time_markers)
+    convert_markers = ("convert ", " to ", " in pst", " in est", " in utc", " in gmt")
+    if any(marker in lowered for marker in time_markers):
+        return True
+    return "convert" in lowered and any(marker in lowered for marker in convert_markers)
+
+
+def is_fetch_url_query(query: str) -> bool:
+    lowered = query.lower()
+    if "http://" in lowered or "https://" in lowered:
+        return True
+    fetch_markers = ("fetch url", "fetch the url", "fetch content", "read this page", "scrape")
+    return any(marker in lowered for marker in fetch_markers)
 
 
 def save_uploaded_file(filename: str, content: bytes) -> DocumentInfo:

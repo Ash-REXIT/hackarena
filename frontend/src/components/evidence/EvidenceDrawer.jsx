@@ -127,7 +127,7 @@ export default function EvidenceDrawer({ meta }) {
                 item={{
                   tool: meta.mcp_tools_used?.[0] || "get_current_time",
                   args: {},
-                  output: "MCPD time tool used for this answer.",
+                  output: "MCPD tool used for this answer.",
                 }}
               />
             )}

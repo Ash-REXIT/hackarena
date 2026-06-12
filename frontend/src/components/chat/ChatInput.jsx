@@ -3,7 +3,7 @@ import { Send } from "lucide-react";
 
 const DEMO_QUERIES = [
   "How many leave days do employees get?",
-  "Latest Mozilla AI news",
+  "Who is the CEO of Google?",
   "What time is it in Tokyo?",
 ];
 
