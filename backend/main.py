@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from agent.agent_service import agent_service
 from routes.chat import router as chat_router
 
-app = FastAPI(title="Local Agent App", version="1.0.0")
+app = FastAPI(title="PrivateLens AI", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,

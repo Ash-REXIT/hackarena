@@ -1,0 +1,6 @@
+Hackathon Project Notes (Private)
+
+Goal: Build a local-first agent that searches private documents before using the public internet.
+Architecture: any-agent orchestrates llamafile (LLM), encoderfile (encoder tasks), and mcpd (MCP tools).
+Search order: 1) private_docs corpus, 2) MCP tools if needed, 3) public web search only when local docs are insufficient.
+Team codename: Blue Moon.

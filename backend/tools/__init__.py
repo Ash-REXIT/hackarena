@@ -8,19 +8,43 @@ from pathlib import Path
 from typing import Any
 
 from mcpd.mcp_client import MCPDClient
+from tools.document_tool import list_private_documents, search_private_documents
+from tools.encoder_tool import analyze_text, classify_sentiment, get_text_embeddings
 from tools.maps_tool import geocode_location
 from tools.time_tool import convert_time, get_current_time
 from tools.weather_tool import get_weather
+from tools.web_tool import search_public_web
 
 LOCAL_TOOL_BUILDERS: dict[str, Callable[[], Callable[..., str]]] = {
+    "search_private_documents": lambda: search_private_documents,
+    "list_private_documents": lambda: list_private_documents,
+    "search_public_web": lambda: search_public_web,
     "get_current_time": lambda: get_current_time,
     "convert_time": lambda: convert_time,
     "get_weather": lambda: get_weather,
     "geocode_location": lambda: geocode_location,
+    "analyze_text": lambda: analyze_text,
+    "classify_sentiment": lambda: classify_sentiment,
+    "get_text_embeddings": lambda: get_text_embeddings,
 }
 
-DEFAULT_LOCAL_TOOLS = ["get_current_time", "convert_time", "get_weather", "geocode_location"]
-DEFAULT_ENABLED_LOCAL_TOOLS = ["get_current_time", "convert_time"]
+DEFAULT_LOCAL_TOOLS = [
+    "search_private_documents",
+    "list_private_documents",
+    "search_public_web",
+    "get_current_time",
+    "convert_time",
+    "get_weather",
+    "geocode_location",
+    "analyze_text",
+    "classify_sentiment",
+    "get_text_embeddings",
+]
+DEFAULT_ENABLED_LOCAL_TOOLS = [
+    "search_private_documents",
+    "list_private_documents",
+    "search_public_web",
+]
 
 REGISTRY_PATH = Path(__file__).resolve().parent / "tools_registry.json"
 
@@ -43,10 +67,28 @@ class ToolRegistry:
             return self._default_entries()
 
     def _default_entries(self) -> list[dict[str, Any]]:
-        return [
+        entries: list[dict[str, Any]] = [
             {"type": "local", "name": name, "enabled": True}
             for name in DEFAULT_ENABLED_LOCAL_TOOLS
         ]
+        entries.extend(
+            [
+                {"type": "mcpd", "server": "time", "tool": "get_current_time", "enabled": True},
+                {"type": "mcpd", "server": "time", "tool": "convert_time", "enabled": False},
+            ]
+        )
+        return entries
+
+    def get_tool_sources(self) -> dict[str, str]:
+        sources: dict[str, str] = {}
+        for entry in self._entries:
+            if not entry.get("enabled", True):
+                continue
+            if entry.get("type") == "local":
+                sources[entry["name"]] = "local"
+            elif entry.get("type") == "mcpd":
+                sources[entry["tool"]] = "mcpd"
+        return sources
 
     def _save_entries(self) -> None:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)

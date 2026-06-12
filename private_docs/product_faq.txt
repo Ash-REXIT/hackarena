@@ -1,0 +1,13 @@
+Acme Agent Product FAQ (Private)
+
+Q: What is our refund window?
+A: Customers can request a full refund within 30 days of purchase.
+
+Q: Which models run fully offline?
+A: Our stack supports llamafile for generation, encoderfile for classification, and mcpd for tool routing.
+
+Q: Where is customer support based?
+A: Support operates from Bangalore and London, 24/5 coverage.
+
+Q: What is the enterprise SLA?
+A: Enterprise plans include 99.9% uptime and 4-hour critical response time.

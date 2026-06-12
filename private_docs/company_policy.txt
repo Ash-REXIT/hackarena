@@ -1,0 +1,8 @@
+Acme Labs Internal Policy (Private)
+
+Leave policy: Employees are entitled to 20 days of paid leave annually.
+
+Remote work: All engineers may work remotely up to 3 days per week.
+Security: Never commit API keys or customer data to public repositories.
+Incident response: Page the on-call engineer within 15 minutes of a P1 outage.
+Documentation: Product specs live in the private_docs folder and must be checked before answering internal questions.

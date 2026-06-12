@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from dataclasses import asdict
+
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from agent.agent_service import agent_service
+from agent.usage_tracker import usage_tracker
+from documents.store import invalidate_index_cache, list_documents_with_meta, save_uploaded_file
+from documents.upload import ALLOWED_EXTENSIONS, extract_text
 from tools import LOCAL_TOOL_BUILDERS
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -13,10 +18,78 @@ class ChatRequest(BaseModel):
     query: str = Field(min_length=1)
 
 
+class ToolCallInfo(BaseModel):
+    name: str
+    source: str
+    args: dict
+    output_preview: str = ""
+
+
+class TimelineEvent(BaseModel):
+    time: str
+    event: str
+    agent: str
+
+
+class AgentStatus(BaseModel):
+    name: str
+    status: str
+    detail: str = ""
+
+
+class EvidenceItem(BaseModel):
+    document: str
+    chunk_id: str
+    excerpt: str
+    score: int
+    search_method: str
+    freshness: str
+    modified_at: str | None = None
+
+
+class KnowledgeBoundary(BaseModel):
+    status: str
+    label: str
+    message: str
+
+
+class Explainability(BaseModel):
+    answer_source: dict[str, int]
+    documents_used: list[str]
+    reason: str
+    confidence: int
+
+
+class InternetBudget(BaseModel):
+    internet_requests_used: int
+    internet_requests_limit: int
+    internet_requests_saved: int
+    web_searches: int
+    mcp_calls: int
+
+
 class ChatResponse(BaseModel):
     response: str
     trace: list[dict]
     tools_used: list[str]
+    mcp_tools_used: list[str] = []
+    local_tools_used: list[str] = []
+    tool_calls: list[ToolCallInfo] = []
+    timeline: list[TimelineEvent] = []
+    agents: list[AgentStatus] = []
+    confidence: int = 0
+    privacy_score: int = 100
+    privacy_reason: str = ""
+    source_breakdown: dict[str, int] = {}
+    knowledge_boundary: KnowledgeBoundary | None = None
+    evidence: list[EvidenceItem] = []
+    documents_used: list[str] = []
+    local_sources: list[dict] = []
+    internet_sources: list[dict] = []
+    explainability: Explainability | None = None
+    internet_budget: InternetBudget | None = None
+    web_used: bool = False
+    encoderfile: dict = {}
 
 
 class AddMcpdToolRequest(BaseModel):
@@ -35,6 +108,65 @@ class ToggleToolRequest(BaseModel):
 @router.get("/health")
 async def health() -> dict:
     return agent_service.health()
+
+
+@router.get("/documents")
+async def list_documents() -> dict:
+    return {"documents": list_documents_with_meta()}
+
+
+@router.get("/budget")
+async def internet_budget() -> dict:
+    return usage_tracker.as_dict()
+
+
+@router.get("/encoder")
+async def encoder_status() -> dict:
+    """Live encoderfile status for hackathon demos."""
+    from documents.store import get_encoder_retrieval_status
+
+    health = agent_service.health()
+    retrieval = get_encoder_retrieval_status()
+    demo_text = "PrivateLens AI keeps your documents local and secure."
+    prediction = None
+    if health.get("encoderfile", {}).get("ok"):
+        try:
+            prediction = agent_service.encoder_client.summarize_prediction(demo_text)
+        except Exception as exc:  # noqa: BLE001
+            prediction = f"Predict failed: {exc}"
+    return {
+        "encoderfile": health.get("encoderfile", {}),
+        "retrieval": retrieval,
+        "demo_prediction": prediction,
+        "demo_input": demo_text,
+    }
+
+
+@router.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...)) -> dict:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+
+    suffix = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if f".{suffix}" not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    try:
+        text = extract_text(file.filename, content)
+        info = save_uploaded_file(file.filename, text.encode("utf-8"))
+        invalidate_index_cache()
+        return {"document": asdict(info), "message": f"Uploaded and indexed {file.filename}"}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/chat", response_model=ChatResponse)

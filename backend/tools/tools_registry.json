@@ -1,0 +1,9 @@
+{
+  "tools": [
+    { "type": "local", "name": "search_private_documents", "enabled": true },
+    { "type": "local", "name": "list_private_documents", "enabled": true },
+    { "type": "local", "name": "search_public_web", "enabled": true },
+    { "type": "mcpd", "server": "time", "tool": "get_current_time", "enabled": true },
+    { "type": "mcpd", "server": "time", "tool": "convert_time", "enabled": false }
+  ]
+}
