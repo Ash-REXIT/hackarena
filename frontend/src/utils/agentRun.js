@@ -45,6 +45,35 @@ export function summarizeAgentRunForStorage(run) {
   };
 }
 
+/** Strip heavy API fields before writing chat history to localStorage. */
+export function slimMetaForStorage(meta) {
+  if (!meta || typeof meta !== "object") return undefined;
+  const {
+    response: _response,
+    trace: _trace,
+    tool_calls: _toolCalls,
+    encoderfile: _encoderfile,
+    internet_budget: _budget,
+    ...rest
+  } = meta;
+  return rest;
+}
+
+export function slimConversationsForStorage(conversations = []) {
+  return conversations.map((conv) => ({
+    id: conv.id,
+    title: conv.title,
+    createdAt: conv.createdAt,
+    messages: (conv.messages || []).map((msg) => ({
+      id: msg.id,
+      role: msg.role,
+      content: msg.content,
+      ts: msg.ts,
+      meta: slimMetaForStorage(msg.meta),
+    })),
+  }));
+}
+
 /** Prefer the newest assistant message meta, then fall back to lastAgentRun. */
 export function findLatestAgentRun(conversations = [], fallback = null) {
   let best = normalizeAgentRun(fallback);

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Bot, Loader2, User } from "lucide-react";
 import { confidenceColor, privacyColor } from "../../api/client";
+import { loadingStageLabel as defaultStageLabel } from "../../utils/loadingStage";
 
 function normalizeText(text) {
   return (text || "").replace(/\\n/g, "\n");
@@ -31,25 +32,7 @@ function renderContent(text) {
     </>
   );
 }
-function TypingText({ text }) {
-  const normalized = normalizeText(text);
-
-  const [displayed, setDisplayed] = useState("");
-  useEffect(() => {
-    setDisplayed("");
-    let i = 0;
-    const step = Math.max(1, Math.floor(normalized.length / 80));
-    const timer = setInterval(() => {
-      i += step;
-      setDisplayed(normalized.slice(0, i));
-      if (i >= normalized.length) clearInterval(timer);
-    }, 16);
-    return () => clearInterval(timer);
-  }, [normalized]);
-  return renderContent(displayed || normalized.slice(0, 1));
-}
-
-function MessageBubble({ message, isLatest }) {
+function MessageBubble({ message }) {
   const isUser = message.role === "user";
   const meta = message.meta;
 
@@ -74,7 +57,7 @@ function MessageBubble({ message, isLatest }) {
               : "bg-surface-card border border-border text-gray-200 rounded-tl-sm"
           }`}
         >
-          {isUser ? message.content : isLatest ? <TypingText text={message.content} /> : renderContent(message.content)}
+          {isUser ? message.content : renderContent(message.content)}
         </div>
         {meta && (
           <div className="flex flex-wrap gap-2">
@@ -111,7 +94,7 @@ function MessageBubble({ message, isLatest }) {
   );
 }
 
-export default function ChatWindow({ messages, loading }) {
+export default function ChatWindow({ messages, loading, loadingStage, loadingStageLabel: stageLabel }) {
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -129,17 +112,13 @@ export default function ChatWindow({ messages, loading }) {
           </p>
         </div>
       )}
-      {messages.map((msg, i) => (
-        <MessageBubble
-          key={msg.id}
-          message={msg}
-          isLatest={i === messages.length - 1 && msg.role === "assistant"}
-        />
+      {messages.map((msg) => (
+        <MessageBubble key={msg.id} message={msg} />
       ))}
       {loading && (
         <div className="flex items-center gap-2 text-gray-500 text-sm">
           <Loader2 className="w-4 h-4 animate-spin text-accent" />
-          FoxZilla agents working… (local model, usually under ~1 min)
+          {(stageLabel || defaultStageLabel)(loadingStage)}
         </div>
       )}
       <div ref={bottomRef} />

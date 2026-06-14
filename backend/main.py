@@ -43,7 +43,7 @@ async def index() -> FileResponse:
             status_code=503,
             detail="Frontend not built. Run: cd frontend && npm install && npm run build",
         )
-    return FileResponse(index_path)
+    return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/{full_path:path}")
@@ -60,6 +60,6 @@ async def spa_routes(full_path: str) -> FileResponse:
 
     index_path = frontend_dir / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
 
     raise HTTPException(status_code=503, detail="Frontend not built.")

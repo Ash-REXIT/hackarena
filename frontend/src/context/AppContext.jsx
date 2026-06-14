@@ -1,10 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, startTransition } from "react";
+import { flushSync } from "react-dom";
 import { api } from "../api/client";
 import {
   findLatestAgentRun,
   normalizeAgentRun,
+  slimConversationsForStorage,
   summarizeAgentRunForStorage,
 } from "../utils/agentRun";
+import { loadingStageLabel } from "../utils/loadingStage";
 
 const STORAGE_KEY = "foxzilla_state_v2";
 
@@ -47,6 +50,9 @@ export function AppProvider({ children }) {
   );
   const [settings, setSettings] = useState({ ...defaultSettings, ...persisted.settings });
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState("");
+  const saveTimerRef = useRef(null);
+  const [, bumpRender] = useState(0);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -74,8 +80,34 @@ export function AppProvider({ children }) {
   }, [refreshHealth, refreshDocuments]);
 
   useEffect(() => {
-    saveState({ conversations, activeChatId, analytics, lastAgentRun, settings });
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = setTimeout(() => {
+      saveState({
+        conversations: slimConversationsForStorage(conversations),
+        activeChatId,
+        analytics,
+        lastAgentRun,
+        settings,
+      });
+    }, 300);
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+    };
   }, [conversations, activeChatId, analytics, lastAgentRun, settings]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        bumpRender((n) => n + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   useEffect(() => {
     const repaired = findLatestAgentRun(conversations, lastAgentRun);
@@ -106,6 +138,41 @@ export function AppProvider({ children }) {
     return id;
   }, []);
 
+  const applyChatResult = useCallback((data, id, query) => {
+    const assistantMsg = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: data.response,
+      meta: data,
+      ts: Date.now(),
+    };
+
+    flushSync(() => {
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === id ? { ...c, messages: [...c.messages, assistantMsg] } : c
+        )
+      );
+      setLoading(false);
+      setLoadingStage("");
+    });
+
+    startTransition(() => {
+      const point = {
+        id: crypto.randomUUID(),
+        ts: Date.now(),
+        query,
+        confidence: data.confidence,
+        privacy: data.privacy_score,
+        webUsed: data.web_used,
+        localPct: data.source_breakdown?.local_documents ?? 0,
+        webPct: data.source_breakdown?.web_verification ?? 0,
+      };
+      setAnalytics((prev) => [...prev.slice(-49), point]);
+      setLastAgentRun(summarizeAgentRunForStorage(data));
+    });
+  }, []);
+
   const sendMessage = useCallback(
     async (query, chatId = activeChatId) => {
       let id = chatId;
@@ -125,40 +192,62 @@ export function AppProvider({ children }) {
       );
 
       setLoading(true);
+      setLoadingStage("retrieval");
+      const requestId = crypto.randomUUID();
+      const sentAt = Date.now();
+      const appliedRef = { current: false };
+      const pollMs = 350;
+      const pollId = setInterval(async () => {
+        try {
+          const status = await api.chatStatus();
+          if (status.stage && status.request_id === requestId) {
+            setLoadingStage(status.stage);
+          }
+          const matchesRequest =
+            status.request_id === requestId ||
+            ((status.updated_at || 0) * 1000 >= sentAt - 100 && status.query === query);
+          if (
+            status.status === "complete" &&
+            status.result &&
+            matchesRequest &&
+            !appliedRef.current
+          ) {
+            appliedRef.current = true;
+            applyChatResult(status.result, id, query);
+          }
+          if (status.status === "error" && status.error && status.request_id === requestId) {
+            setLoadingStage("failed");
+          }
+        } catch {
+          // Ignore transient poll errors while the main request runs.
+        }
+      }, pollMs);
+
       try {
-        const data = await api.chat(query);
-        const assistantMsg = {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: data.response,
-          meta: data,
-          ts: Date.now(),
-        };
+        const data = await api.chat(query, requestId);
+        if (!appliedRef.current) {
+          appliedRef.current = true;
+          applyChatResult(data, id, query);
+        }
 
-        setConversations((prev) =>
-          prev.map((c) =>
-            c.id === id ? { ...c, messages: [...c.messages, assistantMsg] } : c
-          )
-        );
+        if (document.hidden && typeof Notification !== "undefined") {
+          if (Notification.permission === "granted") {
+            new Notification("FoxZilla", { body: "Your answer is ready." });
+          } else if (Notification.permission !== "denied") {
+            Notification.requestPermission();
+          }
+        }
 
-        const point = {
-          id: crypto.randomUUID(),
-          ts: Date.now(),
-          query,
-          confidence: data.confidence,
-          privacy: data.privacy_score,
-          webUsed: data.web_used,
-          localPct: data.source_breakdown?.local_documents ?? 0,
-          webPct: data.source_breakdown?.web_verification ?? 0,
-        };
-        setAnalytics((prev) => [...prev.slice(-49), point]);
-        setLastAgentRun(summarizeAgentRunForStorage(data));
         return data;
-      } finally {
+      } catch (error) {
         setLoading(false);
+        setLoadingStage("");
+        throw error;
+      } finally {
+        clearInterval(pollId);
       }
     },
-    [activeChatId, createConversation]
+    [activeChatId, applyChatResult, createConversation]
   );
 
   const uploadDocument = useCallback(
@@ -191,6 +280,8 @@ export function AppProvider({ children }) {
     latestAgentRun,
     settings,
     loading,
+    loadingStage,
+    loadingStageLabel,
     setActiveChatId,
     createConversation,
     sendMessage,

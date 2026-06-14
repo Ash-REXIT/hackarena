@@ -298,7 +298,13 @@ def should_use_web(confidence: int, query: str, matches: list[DocumentChunk] | N
     if any(marker in lowered for marker in live_markers):
         return True
 
+    if is_meta_followup_query(query):
+        return True
+
     if compound_query_needs_web(query, matches):
+        return True
+
+    if matches and not should_trust_local_matches(query, matches):
         return True
 
     if matches:
@@ -312,14 +318,83 @@ def should_use_web(confidence: int, query: str, matches: list[DocumentChunk] | N
 
 
 def split_query_parts(query: str) -> list[str]:
-    parts = re.split(r"\s+and\s+|,\s*|\?\s*", query, flags=re.IGNORECASE)
-    cleaned: list[str] = []
-    for part in parts:
-        piece = part.strip().rstrip("?")
-        piece = re.sub(r"^and\s+", "", piece, flags=re.IGNORECASE)
+    """Split multi-part questions on commas/semicolons; avoid breaking 'CSK and LSG' lists."""
+    chunks = re.split(r"[,;?]+\s*", query.strip())
+    parts: list[str] = []
+    for chunk in chunks:
+        piece = chunk.strip().rstrip("?")
         if piece:
-            cleaned.append(piece)
-    return cleaned if cleaned else [query.strip()]
+            parts.append(piece)
+    if len(parts) > 1:
+        return parts
+
+    if re.search(r"\s+and\s+", query, flags=re.IGNORECASE):
+        subs = re.split(r"\s+and\s+", query, flags=re.IGNORECASE)
+        independent = [s.strip() for s in subs if _looks_like_independent_question(s.strip())]
+        if len(independent) >= 2:
+            return independent
+
+    return [query.strip()] if query.strip() else []
+
+
+def _looks_like_independent_question(text: str) -> bool:
+    lowered = text.lower().strip()
+    if len(lowered.split()) < 3:
+        return False
+    return lowered.startswith(
+        ("who ", "what ", "when ", "where ", "how ", "which ", "name ", "tell me ")
+    )
+
+
+def expand_meta_followup(query: str, prior_query: str | None) -> str:
+    """Turn vague follow-ups like 'answer the other questions' into the missing sub-questions."""
+    if not is_meta_followup_query(query) or not prior_query:
+        return query
+    parts = split_query_parts(prior_query)
+    if len(parts) <= 1:
+        return prior_query
+    return ", ".join(parts[1:])
+
+
+def is_meta_followup_query(query: str) -> bool:
+    lowered = query.lower()
+    meta_markers = (
+        "other questions",
+        "other parts",
+        "other part",
+        "what about the rest",
+        "answer the other",
+        "remaining questions",
+        "rest of the question",
+        "you missed",
+        "you didn't answer",
+    )
+    return any(marker in lowered for marker in meta_markers)
+
+
+def should_trust_local_matches(query: str, matches: list[DocumentChunk]) -> bool:
+    """Reject keyword false positives (e.g. 'questions' matching company policy)."""
+    if not matches:
+        return False
+    if is_meta_followup_query(query):
+        return False
+    if part_needs_web(query):
+        return False
+
+    query_tokens = _tokenize(query, strip_stopwords=True)
+    if len(query_tokens) <= 2:
+        return False
+
+    top = matches[0]
+    if top.score < 0.5:
+        return False
+
+    content_tokens = _tokenize(top.text, strip_stopwords=True)
+    overlap = len(query_tokens & content_tokens)
+    if overlap < max(2, len(query_tokens) // 2):
+        return False
+
+    return True
 
 
 def is_compound_query(query: str) -> bool:
@@ -339,6 +414,14 @@ WEB_PART_MARKERS = (
     " pm of",
     " pm ",
     "minister of",
+    "chief minister",
+    " cm ",
+    " cm?",
+    "captain",
+    "csk",
+    "lsg",
+    "ipl",
+    "governor",
     "founder of",
     "founder ",
     "latest",

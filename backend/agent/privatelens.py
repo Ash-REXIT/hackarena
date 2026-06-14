@@ -11,6 +11,7 @@ from documents.store import (
     DocumentChunk,
     compute_confidence,
     get_encoder_retrieval_status,
+    is_compound_query,
     is_live_data_query,
     is_fetch_url_query,
     compound_query_needs_web,
@@ -18,10 +19,11 @@ from documents.store import (
     list_documents,
     pick_web_subquery,
     search_documents,
+    should_trust_local_matches,
     should_use_web,
     split_query_parts,
 )
-from tools.web_tool import search_public_web
+from tools.web_tool import needs_fresh_web_query, search_public_web
 
 
 def _now_label() -> str:
@@ -83,6 +85,9 @@ class PrivateLensPipeline:
             return [], 0, "live_mcp", encoder_status
 
         matches = search_documents(query)
+        if matches and not should_trust_local_matches(query, matches):
+            self._add_timeline("Weak local match ignored — unrelated to user question", "Retriever Agent")
+            matches = []
         search_methods = sorted({m.search_method for m in matches}) if matches else ["none"]
         self._add_timeline(
             f"Retrieval mode: {encoder_status.get('retrieval_mode', 'keyword')} "
@@ -184,7 +189,10 @@ class PrivateLensPipeline:
             return None, False
 
         self._set_agent("Web Agent", "active", "Searching public internet")
-        web_query = pick_web_subquery(query, matches)
+        if needs_fresh_web_query(query) and is_compound_query(query):
+            web_query = query
+        else:
+            web_query = pick_web_subquery(query, matches)
         if web_query != query:
             self._add_timeline(f"Focused web search: {web_query}", "Web Agent")
         self._add_timeline("Searching Internet...", "Web Agent")
@@ -268,7 +276,18 @@ class PrivateLensPipeline:
             sections.extend(
                 [
                     "",
-                    "Answer from the web evidence above. Cover every part of the question.",
+                    *(
+                        [
+                            "These results include RECENT web search (2026). "
+                            "Prefer web snippets over Wikipedia for current CM, captains, and news.",
+                        ]
+                        if "Recent public web" in web_context
+                        else []
+                    ),
+                    "Answer ONLY from the web evidence above.",
+                    "For current roles (CM, captain, minister), use the newest web snippet — not old Wikipedia text.",
+                    "Give a direct one- or two-sentence answer naming the person and their role.",
+                    "Do NOT use outdated names if web evidence shows a newer name.",
                     "End with: Source: Web verification",
                 ]
             )

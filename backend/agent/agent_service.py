@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -9,6 +10,7 @@ from any_agent import AgentConfig, AgentFramework, AnyAgent
 from any_agent.tracing.attributes import GenAI
 
 from agent.config import get_settings
+from agent.job_status import job_tracker
 from agent.privatelens import PrivateLensPipeline
 from agent.problem import PROBLEM_INSTRUCTIONS
 from agent.prompts import SYSTEM_PROMPT
@@ -16,6 +18,7 @@ from agent.usage_tracker import usage_tracker
 from encoder.encoder_client import EncoderfileClient
 from mcpd.mcp_client import MCPDClient
 from tools import ToolRegistry
+from tools.web_tool import needs_fresh_web_query, try_fresh_web_direct_answer, try_wikipedia_direct_answer
 
 
 def normalize_response_text(text: str) -> str:
@@ -33,6 +36,7 @@ class AgentService:
         self.encoder_client = EncoderfileClient(base_url=self.settings.encoderfile_base_url)
         self.tool_registry = ToolRegistry(self.mcpd_client)
         self._agent: AnyAgent | None = None
+        self._last_query: str = ""
 
     async def _build_agent(self) -> AnyAgent:
         tools = self.tool_registry.build_callables()
@@ -105,20 +109,21 @@ class AgentService:
             "local_tools_used": local_tools_used,
         }
 
-    async def run_query(self, query: str) -> dict[str, Any]:
-        if not self._agent:
-            await self.reload_agent()
-
+    def _run_pipeline_blocking(self, query: str) -> dict[str, Any]:
+        """Run sync pipeline stages without blocking the asyncio event loop."""
         pipeline = PrivateLensPipeline()
+        job_tracker.set_stage("retrieval")
         matches, confidence, boundary, encoder_status = pipeline.run_retrieval(query)
+        job_tracker.set_stage("decision")
         decision = pipeline.run_decision(query, confidence, matches, boundary)
+        job_tracker.set_stage("local")
         local_context = pipeline.run_local_stage(
             matches,
             live_data=decision["live_data"],
             fetch_url=decision.get("fetch_url", False),
         )
+        job_tracker.set_stage("web")
         web_context, web_used = pipeline.run_web_stage(query, decision["use_web"], matches)
-
         answer_prompt = PrivateLensPipeline.build_answer_prompt(
             query=query,
             local_context=local_context,
@@ -128,12 +133,26 @@ class AgentService:
             live_data=decision["live_data"],
             fetch_url=decision.get("fetch_url", False),
         )
+        return {
+            "pipeline": pipeline,
+            "matches": matches,
+            "confidence": confidence,
+            "boundary": boundary,
+            "encoder_status": encoder_status,
+            "decision": decision,
+            "web_used": web_used,
+            "web_context": web_context,
+            "answer_prompt": answer_prompt,
+        }
 
-        assert self._agent is not None
-        trace = await self._agent.run_async(
-            answer_prompt,
-            max_turns=self.settings.llm_max_turns,
-        )
+    def _build_result_from_trace(
+        self,
+        *,
+        query: str,
+        ctx: dict[str, Any],
+        trace: Any,
+    ) -> dict[str, Any]:
+        pipeline: PrivateLensPipeline = ctx["pipeline"]
         final_output = trace.final_output
         if final_output is None:
             messages = trace.spans_to_messages()
@@ -147,7 +166,6 @@ class AgentService:
             final_output = str(final_output)
 
         final_output = normalize_response_text(final_output)
-
         usage = self._extract_tool_usage(trace)
         spans_summary = []
         if hasattr(trace, "spans"):
@@ -161,15 +179,15 @@ class AgentService:
 
         metadata = pipeline.finalize_metadata(
             query=query,
-            matches=matches,
-            confidence=confidence,
-            boundary=boundary,
-            decision=decision,
-            web_used=web_used,
-            web_context=web_context,
+            matches=ctx["matches"],
+            confidence=ctx["confidence"],
+            boundary=ctx["boundary"],
+            decision=ctx["decision"],
+            web_used=ctx["web_used"],
+            web_context=ctx["web_context"],
             mcp_tools=usage["mcp_tools_used"],
             local_tools=usage["local_tools_used"],
-            encoder_status=encoder_status,
+            encoder_status=ctx["encoder_status"],
             tool_calls=usage["tool_calls"],
         )
 
@@ -179,6 +197,105 @@ class AgentService:
             **usage,
             **metadata,
         }
+
+    def _build_result_from_direct_answer(
+        self,
+        *,
+        query: str,
+        ctx: dict[str, Any],
+        response_text: str,
+    ) -> dict[str, Any]:
+        pipeline: PrivateLensPipeline = ctx["pipeline"]
+        metadata = pipeline.finalize_metadata(
+            query=query,
+            matches=ctx["matches"],
+            confidence=ctx["confidence"],
+            boundary=ctx["boundary"],
+            decision=ctx["decision"],
+            web_used=ctx["web_used"],
+            web_context=ctx["web_context"],
+            mcp_tools=[],
+            local_tools=[],
+            encoder_status=ctx["encoder_status"],
+            tool_calls=[],
+        )
+        pipeline._set_agent("Answer Agent", "complete", "Wikipedia direct answer")
+        pipeline._add_timeline(
+            "Answer from live web extraction (LLM skipped for current-role reliability)",
+            "Answer Agent",
+        )
+        metadata["agents"] = pipeline.agent_status
+        metadata["timeline"] = pipeline.timeline
+        return {
+            "response": response_text,
+            "trace": [{"name": "web_direct", "status": "OK"}],
+            "tool_calls": [],
+            "tools_used": [],
+            "mcp_tools_used": [],
+            "local_tools_used": [],
+            **metadata,
+        }
+
+    async def run_query(self, query: str, request_id: str = "") -> dict[str, Any]:
+        from documents.store import expand_meta_followup, is_meta_followup_query
+
+        effective_query = expand_meta_followup(query, self._last_query or None)
+        if not is_meta_followup_query(query):
+            self._last_query = query
+
+        if request_id:
+            job_tracker.set_query(effective_query)
+        else:
+            job_tracker.start(effective_query, request_id=request_id)
+        try:
+            if not self._agent:
+                await self.reload_agent()
+
+            loop = asyncio.get_running_loop()
+            ctx = await loop.run_in_executor(None, self._run_pipeline_blocking, effective_query)
+
+            from documents.store import compound_query_needs_web
+
+            decision = ctx["decision"]
+            hybrid = ctx["web_used"] and compound_query_needs_web(effective_query, ctx["matches"])
+            if (
+                ctx["web_used"]
+                and not decision.get("live_data")
+                and not decision.get("fetch_url")
+            ):
+                if needs_fresh_web_query(effective_query):
+                    direct = try_fresh_web_direct_answer(effective_query)
+                elif not hybrid:
+                    direct = try_wikipedia_direct_answer(effective_query)
+                else:
+                    direct = None
+                if direct:
+                    job_tracker.set_stage("finalize")
+                    result = self._build_result_from_direct_answer(
+                        query=effective_query,
+                        ctx=ctx,
+                        response_text=direct,
+                    )
+                    job_tracker.complete(result)
+                    return result
+
+            job_tracker.set_stage("answer_agent")
+            assert self._agent is not None
+            trace = await self._agent.run_async(
+                ctx["answer_prompt"],
+                max_turns=self.settings.llm_max_turns,
+            )
+
+            job_tracker.set_stage("finalize")
+            result = self._build_result_from_trace(query=effective_query, ctx=ctx, trace=trace)
+            job_tracker.complete(result)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            job_tracker.fail(str(exc))
+            raise
+
+    def get_job_status(self) -> dict[str, Any]:
+        return job_tracker.snapshot()
 
     def health(self) -> dict[str, Any]:
         llm_ok = False

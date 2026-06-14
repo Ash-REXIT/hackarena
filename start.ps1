@@ -48,7 +48,9 @@ if ($llmOk -and $encoderOk -and $mcpdOk) {
 }
 
 Write-Host "Starting backend on http://localhost:8000"
+Write-Host "  UI + API both on port 8000 (frontend built to frontend/dist)"
 Write-Host "Open http://localhost:8000 in your browser after startup."
+Write-Host "  Dev-only alternative: cd frontend && npm run dev  ->  http://localhost:5173"
 Write-Host ""
 
 Set-Location "$PSScriptRoot\backend"

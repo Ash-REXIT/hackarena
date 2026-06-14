@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from agent.agent_service import agent_service
+from agent.job_status import job_tracker
 from agent.usage_tracker import usage_tracker
 from documents.store import invalidate_index_cache, list_documents_with_meta, save_uploaded_file
 from documents.upload import ALLOWED_EXTENSIONS, extract_text
@@ -16,6 +18,7 @@ router = APIRouter(prefix="/api", tags=["chat"])
 
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1)
+    request_id: str | None = None
 
 
 class ToolCallInfo(BaseModel):
@@ -171,10 +174,18 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/chat/status")
+async def chat_status() -> dict:
+    """Lightweight poll endpoint so the UI can update before the POST /chat body finishes."""
+    return agent_service.get_job_status()
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     try:
-        result = await agent_service.run_query(request.query)
+        request_id = (request.request_id or "").strip() or uuid.uuid4().hex
+        job_tracker.start(request.query, request_id=request_id)
+        result = await agent_service.run_query(request.query, request_id=request_id)
         return ChatResponse(**result)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc

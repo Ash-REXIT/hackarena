@@ -7,6 +7,7 @@ async function request(path, options = {}, timeoutMs = 600000) {
     const response = await fetch(`${API_BASE}${path}`, {
       ...options,
       signal: controller.signal,
+      cache: "no-store",
       headers: {
         ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
         ...options.headers,
@@ -29,7 +30,12 @@ async function request(path, options = {}, timeoutMs = 600000) {
 
 export const api = {
   health: () => request("/api/health"),
-  chat: (query) => request("/api/chat", { method: "POST", body: JSON.stringify({ query }) }),
+  chatStatus: () => request("/api/chat/status", {}, 10000),
+  chat: (query, requestId) =>
+    request("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ query, request_id: requestId }),
+    }),
   documents: () => request("/api/documents"),
   upload: (file) => {
     const form = new FormData();
