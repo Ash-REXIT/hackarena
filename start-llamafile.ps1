@@ -1,5 +1,7 @@
+. "$PSScriptRoot\scripts\load-env.ps1"
+
 $port = 8080
-$modelPath = "C:\Users\kmkan\Qwen3.5-0.8B-Q8_0.exe"
+$modelPath = Get-DotEnvValue -Key "LLAMAFILE_PATH" -Default "C:\Users\kmkan\Qwen3.5-0.8B-Q8_0.exe"
 
 try {
     $response = Invoke-WebRequest -Uri "http://localhost:$port/v1/models" -TimeoutSec 3 -UseBasicParsing
@@ -28,9 +30,10 @@ try {
 
 if (-not (Test-Path $modelPath)) {
     Write-Host "Model not found: $modelPath"
+    Write-Host "Set LLAMAFILE_PATH in backend\.env"
     exit 1
 }
 
-Write-Host "Starting llamafile Qwen model on http://localhost:$port"
+Write-Host "Starting llamafile (Mozilla stack LLM) on http://localhost:$port"
 Write-Host "  Path: $modelPath"
 & $modelPath --server --port $port

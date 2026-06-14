@@ -11,6 +11,7 @@ from documents.store import (
     DocumentChunk,
     compute_confidence,
     get_encoder_retrieval_status,
+    is_assistant_identity_query,
     is_compound_query,
     is_live_data_query,
     is_fetch_url_query,
@@ -85,7 +86,11 @@ class PrivateLensPipeline:
             return [], 0, "live_mcp", encoder_status
 
         matches = search_documents(query)
-        if matches and not should_trust_local_matches(query, matches):
+        if (
+            matches
+            and not is_assistant_identity_query(query)
+            and not should_trust_local_matches(query, matches)
+        ):
             self._add_timeline("Weak local match ignored — unrelated to user question", "Retriever Agent")
             matches = []
         search_methods = sorted({m.search_method for m in matches}) if matches else ["none"]
@@ -118,6 +123,8 @@ class PrivateLensPipeline:
     ) -> dict[str, Any]:
         self._set_agent("Decision Agent", "active", "Evaluating internet need")
         use_web = should_use_web(confidence, query, matches)
+        if is_assistant_identity_query(query):
+            use_web = False
         live_data = is_live_data_query(query)
         fetch_url = is_fetch_url_query(query)
 
@@ -188,6 +195,13 @@ class PrivateLensPipeline:
         if not use_web:
             return None, False
 
+        from agent.usage_tracker import usage_tracker
+
+        if not usage_tracker.can_use_web():
+            self._add_timeline("Internet budget exhausted — web search skipped", "Web Agent")
+            self._set_agent("Web Agent", "skipped", "Budget limit reached")
+            return "Internet search budget exhausted. Answer from local documents only.", False
+
         self._set_agent("Web Agent", "active", "Searching public internet")
         if needs_fresh_web_query(query) and is_compound_query(query):
             web_query = query
@@ -197,7 +211,8 @@ class PrivateLensPipeline:
             self._add_timeline(f"Focused web search: {web_query}", "Web Agent")
         self._add_timeline("Searching Internet...", "Web Agent")
         web_result = search_public_web(web_query)
-        usage_tracker.record_web_search()
+        if not usage_tracker.record_web_search():
+            self._add_timeline("Web search completed but budget now exhausted", "Web Agent")
         self._add_timeline("Web Search Complete", "Web Agent")
         self._set_agent("Web Agent", "complete", "Public sources retrieved")
         return web_result, True
@@ -291,13 +306,30 @@ class PrivateLensPipeline:
                     "End with: Source: Web verification",
                 ]
             )
+        elif has_local:
+            from documents.store import is_assistant_identity_query
+
+            local_rules = [
+                "",
+                "LOCAL DOCUMENT QUESTION — read the excerpt(s) above and answer in your own words.",
+                "Understand what the user is asking, then answer using ONLY facts from those excerpts.",
+                "Write 1-3 clear sentences that directly answer the question.",
+                "Do NOT invent facts not present in the excerpts.",
+                "Never respond with only a Source line.",
+                "End with: Source: <document filename> (filename only, no square brackets).",
+            ]
+            if is_assistant_identity_query(query):
+                local_rules.insert(
+                    2,
+                    "The user is asking about this assistant's name or identity.",
+                )
+            sections.extend(local_rules)
         else:
             sections.extend(
                 [
                     "",
-                    "Answer directly from the local evidence above only.",
-                    "Do NOT invent facts or copy placeholder text.",
-                    "End with: Source: <document filename>",
+                    "No local or web evidence was found for this question.",
+                    "Say briefly that you could not find an answer in local documents.",
                 ]
             )
 

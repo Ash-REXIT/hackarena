@@ -1,4 +1,4 @@
-Write-Host "Hackathon stack preflight check"
+Write-Host "Mozilla AI stack preflight (llamafile + encoderfile + mcpd + any-agent)"
 Write-Host "================================"
 
 function Test-Service {
@@ -30,7 +30,7 @@ $app = Test-Service "any-agent app" "http://localhost:8000/api/health" { param($
 
 Write-Host ""
 if ($llm -and $encoder -and $mcpd) {
-    Write-Host "Core hackathon stack is ready (llamafile + encoderfile + mcpd)."
+    Write-Host "Mozilla stack is ready (llamafile + encoderfile + mcpd)."
 } else {
     Write-Host "Some services are missing. Start them with:"
     Write-Host "  d:\proj\start-llamafile.ps1"

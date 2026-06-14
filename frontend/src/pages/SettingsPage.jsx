@@ -1,10 +1,27 @@
 import { useApp } from "../context/AppContext";
+import { api } from "../api/client";
+import { useRef } from "react";
 
 export default function SettingsPage() {
   const { settings, setSettings, health } = useApp();
   const modelId = health?.model_id || "Qwen 3.5";
+  const syncTimerRef = useRef(null);
 
-  const update = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }));
+  const update = (key, value) => {
+    setSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = setTimeout(() => {
+        api.updateSettings({
+          temperature: next.temperature,
+          topK: next.topK,
+          chunkSize: next.chunkSize,
+          internetFallback: next.internetFallback,
+        }).catch(() => {});
+      }, 600);
+      return next;
+    });
+  };
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8 space-y-6">

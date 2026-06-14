@@ -32,7 +32,7 @@ if assets_dir.is_dir():
 
 @app.on_event("startup")
 async def startup() -> None:
-    await agent_service.reload_agent()
+    pass
 
 
 @app.get("/")

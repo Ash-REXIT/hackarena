@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -12,9 +12,19 @@ class UsageTracker:
     web_searches: int = 0
     mcp_calls: int = 0
 
-    def record_web_search(self) -> None:
+    def set_limit(self, limit: int) -> None:
+        self.internet_limit = max(1, limit)
+
+    def can_use_web(self) -> bool:
+        return self.internet_used < self.internet_limit
+
+    def record_web_search(self) -> bool:
+        """Record a web search. Returns False if budget exceeded."""
+        if not self.can_use_web():
+            return False
         self.internet_used += 1
         self.web_searches += 1
+        return True
 
     def record_mcp_call(self) -> None:
         self.mcp_calls += 1
@@ -30,6 +40,7 @@ class UsageTracker:
             "internet_requests_saved": self.saved_requests,
             "web_searches": self.web_searches,
             "mcp_calls": self.mcp_calls,
+            "budget_exhausted": not self.can_use_web(),
         }
 
 

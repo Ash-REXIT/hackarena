@@ -39,14 +39,17 @@ class AgentService:
         self._last_query: str = ""
 
     async def _build_agent(self) -> AnyAgent:
+        from agent.runtime_settings import runtime_settings
+
         tools = self.tool_registry.build_callables()
+        temperature = runtime_settings.snapshot()["temperature"]
         config = AgentConfig(
             model_id=self.settings.llm_model_id,
             api_base=self.settings.llm_api_base,
             api_key=self.settings.llm_api_key,
             tools=tools,
             instructions=f"{SYSTEM_PROMPT}\n\n{PROBLEM_INSTRUCTIONS}".strip(),
-            model_args={"temperature": 0.1, "parallel_tool_calls": False},
+            model_args={"temperature": temperature, "parallel_tool_calls": False},
         )
         return await AnyAgent.create_async(
             agent_framework=AgentFramework.OPENAI,
@@ -237,7 +240,7 @@ class AgentService:
         }
 
     async def run_query(self, query: str, request_id: str = "") -> dict[str, Any]:
-        from documents.store import expand_meta_followup, is_meta_followup_query
+        from documents.store import compound_query_needs_web, expand_meta_followup, is_meta_followup_query
 
         effective_query = expand_meta_followup(query, self._last_query or None)
         if not is_meta_followup_query(query):
@@ -254,21 +257,22 @@ class AgentService:
             loop = asyncio.get_running_loop()
             ctx = await loop.run_in_executor(None, self._run_pipeline_blocking, effective_query)
 
-            from documents.store import compound_query_needs_web
-
             decision = ctx["decision"]
             hybrid = ctx["web_used"] and compound_query_needs_web(effective_query, ctx["matches"])
+
+            def _try_direct_answer() -> str | None:
+                if needs_fresh_web_query(effective_query):
+                    return try_fresh_web_direct_answer(effective_query)
+                if not hybrid:
+                    return try_wikipedia_direct_answer(effective_query)
+                return None
+
             if (
                 ctx["web_used"]
                 and not decision.get("live_data")
                 and not decision.get("fetch_url")
             ):
-                if needs_fresh_web_query(effective_query):
-                    direct = try_fresh_web_direct_answer(effective_query)
-                elif not hybrid:
-                    direct = try_wikipedia_direct_answer(effective_query)
-                else:
-                    direct = None
+                direct = await loop.run_in_executor(None, _try_direct_answer)
                 if direct:
                     job_tracker.set_stage("finalize")
                     result = self._build_result_from_direct_answer(
@@ -297,7 +301,9 @@ class AgentService:
     def get_job_status(self) -> dict[str, Any]:
         return job_tracker.snapshot()
 
-    def health(self) -> dict[str, Any]:
+    def health(self, *, fast: bool = False) -> dict[str, Any]:
+        """Check stack health. Use fast=True for navbar polls (short timeouts)."""
+        timeout = 2 if fast else 5
         llm_ok = False
         mcpd_ok = False
         encoder_ok = False
@@ -309,24 +315,38 @@ class AgentService:
         try:
             import requests
 
-            response = requests.get(f"{self.settings.llm_api_base}/models", timeout=5)
+            response = requests.get(f"{self.settings.llm_api_base}/models", timeout=timeout)
             llm_ok = response.ok
         except Exception as exc:  # noqa: BLE001
             llm_error = str(exc)
 
         try:
-            self.mcpd_client.list_servers()
-            mcpd_ok = True
+            response = requests.get(
+                f"{self.mcpd_client.api_root}/servers",
+                timeout=timeout,
+            )
+            mcpd_ok = response.ok
         except Exception as exc:  # noqa: BLE001
             mcpd_error = str(exc)
 
         try:
-            encoder_ok = self.encoder_client.health()
-            encoder_model = self.encoder_client.model_info()
+            from encoder.encoder_client import EncoderfileClient
+
+            client = EncoderfileClient(timeout=3)
+            encoder_ok = client.health()
+            if not fast:
+                encoder_model = self.encoder_client.model_info()
         except Exception as exc:  # noqa: BLE001
             encoder_error = str(exc)
 
-        from documents.store import list_documents_with_meta, get_encoder_retrieval_status
+        from documents.store import list_documents_with_meta
+        from agent.runtime_settings import runtime_settings
+
+        retrieval = {"retrieval_mode": "keyword", "message": "Encoderfile status deferred"}
+        if not fast:
+            from documents.store import get_encoder_retrieval_status
+
+            retrieval = get_encoder_retrieval_status()
 
         return {
             "app": "FoxZilla",
@@ -342,13 +362,20 @@ class AgentService:
                 "base_url": self.settings.encoderfile_base_url,
                 "model": encoder_model,
                 "error": encoder_error,
-                "retrieval": get_encoder_retrieval_status(),
+                "retrieval": retrieval,
             },
             "mcpd": {"ok": mcpd_ok, "base_url": self.settings.mcpd_base_url, "error": mcpd_error},
-            "private_docs": list_documents_with_meta(),
+            "private_docs": list_documents_with_meta() if not fast else [],
             "model_id": self.settings.llm_model_id,
             "internet_budget": usage_tracker.as_dict(),
-            "ready": llm_ok and mcpd_ok,
+            "settings": runtime_settings.snapshot(),
+            "stack": {
+                "llamafile": {"ok": llm_ok, "port": 8080},
+                "encoderfile": {"ok": encoder_ok, "port": 8081},
+                "mcpd": {"ok": mcpd_ok, "port": 8090},
+                "any_agent": {"framework": "any-agent", "port": self.settings.port},
+            },
+            "ready": llm_ok and encoder_ok and mcpd_ok,
         }
 
 

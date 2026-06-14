@@ -14,6 +14,9 @@ DOCS_DIR = Path(__file__).resolve().parents[2] / "private_docs"
 INDEX_PATH = Path(__file__).resolve().parent / "index_cache.json"
 CONFIDENCE_THRESHOLD = 0.45
 
+_chunk_cache: list[DocumentChunk] = []
+_chunk_cache_signature: str = ""
+
 STOP_WORDS = {
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of",
     "with", "by", "from", "is", "are", "was", "were", "be", "been", "being",
@@ -81,7 +84,7 @@ def _freshness_label(age_days: int) -> str:
 
 
 def get_document_info(name: str) -> DocumentInfo | None:
-    path = DOCS_DIR / name
+    path = _docs_dir() / name
     if not path.is_file():
         return None
     stat = path.stat()
@@ -97,10 +100,11 @@ def get_document_info(name: str) -> DocumentInfo | None:
 
 
 def list_documents() -> list[str]:
-    if not DOCS_DIR.exists():
-        DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    docs_dir = _docs_dir()
+    if not docs_dir.exists():
+        docs_dir.mkdir(parents=True, exist_ok=True)
         return []
-    return sorted(path.name for path in DOCS_DIR.glob("*") if path.is_file())
+    return sorted(path.name for path in docs_dir.glob("*") if path.is_file())
 
 
 def list_documents_with_meta() -> list[dict[str, Any]]:
@@ -111,24 +115,133 @@ def list_documents_with_meta() -> list[dict[str, Any]]:
     ]
 
 
+def _docs_dir() -> Path:
+    try:
+        from agent.config import get_settings
+
+        custom = get_settings().private_docs_dir.strip()
+        if custom:
+            return Path(custom)
+    except Exception:  # noqa: BLE001
+        pass
+    return DOCS_DIR
+
+
+def _retrieval_options() -> tuple[int, int]:
+    try:
+        from agent.runtime_settings import runtime_settings
+
+        snap = runtime_settings.snapshot()
+        return int(snap["topK"]), int(snap["chunkSize"])
+    except Exception:  # noqa: BLE001
+        return 4, 512
+
+
+def _folder_signature(docs_dir: Path) -> str:
+    if not docs_dir.exists():
+        return ""
+    parts: list[str] = []
+    for path in sorted(docs_dir.glob("*")):
+        if path.is_file():
+            stat = path.stat()
+            parts.append(f"{path.name}:{stat.st_size}:{int(stat.st_mtime)}")
+    return "|".join(parts)
+
+
+def _split_text(text: str, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + max_chars)
+        if end < len(text):
+            break_at = text.rfind("\n", start, end)
+            if break_at > start + max_chars // 3:
+                end = break_at
+        piece = text[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        start = end
+    return chunks or [text[:max_chars]]
+
+
 def _load_chunks() -> list[DocumentChunk]:
+    global _chunk_cache, _chunk_cache_signature
+
+    docs_dir = _docs_dir()
+    _, chunk_size = _retrieval_options()
+    signature = f"{_folder_signature(docs_dir)}:chunk={chunk_size}"
+
+    if _chunk_cache and _chunk_cache_signature == signature:
+        return _chunk_cache
+
+    if INDEX_PATH.exists():
+        try:
+            cached = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+            if cached.get("signature") == signature:
+                _chunk_cache = [
+                    DocumentChunk(
+                        chunk_id=item["chunk_id"],
+                        source=item["source"],
+                        text=item["text"],
+                        score=0.0,
+                        search_method=item.get("search_method", "keyword"),
+                    )
+                    for item in cached.get("chunks", [])
+                ]
+                _chunk_cache_signature = signature
+                return _chunk_cache
+        except Exception:  # noqa: BLE001
+            pass
+
     chunks: list[DocumentChunk] = []
-    for path in sorted(DOCS_DIR.glob("*")):
+    if not docs_dir.exists():
+        docs_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in sorted(docs_dir.glob("*")):
         if not path.is_file():
             continue
         content = path.read_text(encoding="utf-8", errors="ignore").strip()
         if not content:
             continue
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", content) if part.strip()]
-        for index, paragraph in enumerate(paragraphs):
-            chunks.append(
-                DocumentChunk(
-                    chunk_id=f"{path.name}#{index}",
-                    source=path.name,
-                    text=paragraph,
-                    score=0.0,
+        index = 0
+        for paragraph in paragraphs:
+            for piece in _split_text(paragraph, chunk_size):
+                chunks.append(
+                    DocumentChunk(
+                        chunk_id=f"{path.name}#{index}",
+                        source=path.name,
+                        text=piece,
+                        score=0.0,
+                    )
                 )
-            )
+                index += 1
+
+    _chunk_cache = chunks
+    _chunk_cache_signature = signature
+    try:
+        INDEX_PATH.write_text(
+            json.dumps(
+                {
+                    "signature": signature,
+                    "chunks": [
+                        {
+                            "chunk_id": c.chunk_id,
+                            "source": c.source,
+                            "text": c.text,
+                            "search_method": c.search_method,
+                        }
+                        for c in chunks
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return chunks
 
 
@@ -180,7 +293,7 @@ def _semantic_scores(query: str, chunks: list[DocumentChunk]) -> dict[str, float
     try:
         from encoder.encoder_client import EncoderfileClient
 
-        client = EncoderfileClient()
+        client = EncoderfileClient(timeout=5)
         model_type = client.model_info().get("model_type", "")
         if model_type != "embedding":
             return {}
@@ -222,7 +335,16 @@ def _extract_embedding(result: dict[str, Any]) -> list[float] | None:
     return None
 
 
-def search_documents(query: str, limit: int = 4) -> list[DocumentChunk]:
+def search_documents(query: str, limit: int | None = None) -> list[DocumentChunk]:
+    if is_assistant_identity_query(query):
+        identity = identity_doc_matches()
+        if identity:
+            top_k, _ = _retrieval_options()
+            return identity[: limit or top_k]
+
+    top_k, _ = _retrieval_options()
+    if limit is None:
+        limit = top_k
     query_tokens = _tokenize(query)
     if not query_tokens:
         return []
@@ -258,6 +380,9 @@ def search_documents(query: str, limit: int = 4) -> list[DocumentChunk]:
 
     ranked.sort(key=lambda item: item.score, reverse=True)
 
+    if not is_assistant_identity_query(query):
+        ranked = [item for item in ranked if item.source.lower() != "lk.txt"]
+
     seen_sources: set[str] = set()
     deduped: list[DocumentChunk] = []
     for item in ranked:
@@ -282,7 +407,56 @@ def compute_confidence(matches: list[DocumentChunk]) -> int:
     return max(5, min(99, int(round(raw))))
 
 
+def is_assistant_identity_query(query: str) -> bool:
+    """Questions about this assistant — answer from local docs, never the public web."""
+    lowered = query.lower().strip()
+    if re.search(r"what\s+is\s+(?:your|you)\s+name", lowered):
+        return True
+    if re.search(r"what(?:'s|\s+is)\s+(?:your|you)\s+name", lowered):
+        return True
+    markers = (
+        "who are you",
+        "what are you",
+        "tell me your name",
+        "what do you call yourself",
+        "whats your name",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def identity_doc_matches() -> list[DocumentChunk]:
+    """Chunks that define this assistant's name (lk.txt only)."""
+    chunks = _load_chunks()
+    hits: list[DocumentChunk] = []
+    for chunk in chunks:
+        source_lower = chunk.source.lower()
+        text_lower = chunk.text.lower()
+        if source_lower == "lk.txt" or "foxzilla" in text_lower:
+            hits.append(
+                DocumentChunk(
+                    chunk_id=chunk.chunk_id,
+                    source=chunk.source,
+                    text=chunk.text,
+                    score=0.92,
+                    search_method="identity",
+                )
+            )
+    return hits
+
+
 def should_use_web(confidence: int, query: str, matches: list[DocumentChunk] | None = None) -> bool:
+    try:
+        from agent.runtime_settings import runtime_settings
+
+        if not runtime_settings.snapshot()["internetFallback"]:
+            return False
+        from agent.usage_tracker import usage_tracker
+
+        if not usage_tracker.can_use_web():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+
     lowered = query.lower()
     live_markers = (
         "latest",
@@ -300,6 +474,9 @@ def should_use_web(confidence: int, query: str, matches: list[DocumentChunk] | N
 
     if is_meta_followup_query(query):
         return True
+
+    if is_assistant_identity_query(query):
+        return False
 
     if compound_query_needs_web(query, matches):
         return True
@@ -376,21 +553,34 @@ def should_trust_local_matches(query: str, matches: list[DocumentChunk]) -> bool
     """Reject keyword false positives (e.g. 'questions' matching company policy)."""
     if not matches:
         return False
+    top = matches[0]
     if is_meta_followup_query(query):
         return False
+    if is_assistant_identity_query(query):
+        return top.score >= 0.35
     if part_needs_web(query):
         return False
 
     query_tokens = _tokenize(query, strip_stopwords=True)
+    content_tokens = _tokenize(top.text, strip_stopwords=True)
+    filename_tokens = _filename_tokens(top.source)
+    overlap = len(query_tokens & content_tokens)
+    filename_overlap = len(query_tokens & filename_tokens)
+
+    if top.score >= 0.5 and filename_overlap >= 1:
+        return True
+
+    if top.score >= 0.75 and (overlap >= 1 or filename_overlap >= 1):
+        return True
+
     if len(query_tokens) <= 2:
+        if top.score >= 0.65 and overlap >= 1:
+            return True
         return False
 
-    top = matches[0]
     if top.score < 0.5:
         return False
 
-    content_tokens = _tokenize(top.text, strip_stopwords=True)
-    overlap = len(query_tokens & content_tokens)
     if overlap < max(2, len(query_tokens) // 2):
         return False
 
@@ -507,9 +697,10 @@ def is_fetch_url_query(query: str) -> bool:
 
 
 def save_uploaded_file(filename: str, content: bytes) -> DocumentInfo:
-    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    docs_dir = _docs_dir()
+    docs_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name
-    target = DOCS_DIR / safe_name
+    target = docs_dir / safe_name
     target.write_bytes(content)
     info = get_document_info(safe_name)
     assert info is not None
@@ -517,6 +708,9 @@ def save_uploaded_file(filename: str, content: bytes) -> DocumentInfo:
 
 
 def invalidate_index_cache() -> None:
+    global _chunk_cache, _chunk_cache_signature
+    _chunk_cache = []
+    _chunk_cache_signature = ""
     if INDEX_PATH.exists():
         INDEX_PATH.unlink(missing_ok=True)
 

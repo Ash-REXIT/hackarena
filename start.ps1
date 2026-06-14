@@ -9,7 +9,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "Local Agent startup checks..."
+Write-Host "Stopping any stale backend on port 8000..."
+& "$PSScriptRoot\stop.ps1"
 
 $llmOk = $false
 $encoderOk = $false
@@ -41,7 +42,7 @@ try {
 }
 
 if ($llmOk -and $encoderOk -and $mcpdOk) {
-    Write-Host "Hackathon stack ready: llamafile + encoderfile + mcpd"
+    Write-Host "Mozilla stack ready: llamafile + encoderfile + mcpd + any-agent"
 } else {
     Write-Host ""
     Write-Host "Run d:\proj\preflight.ps1 for a full check."
@@ -54,4 +55,4 @@ Write-Host "  Dev-only alternative: cd frontend && npm run dev  ->  http://local
 Write-Host ""
 
 Set-Location "$PSScriptRoot\backend"
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn main:app --host 0.0.0.0 --port 8000

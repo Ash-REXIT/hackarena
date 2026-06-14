@@ -73,11 +73,21 @@ export function AppProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    if (loading) return undefined;
     refreshHealth();
     refreshDocuments();
-    const interval = setInterval(refreshHealth, 30000);
+    api.settings()
+      .then((data) => {
+        if (data?.settings) {
+          setSettings((prev) => ({ ...prev, ...data.settings }));
+        }
+      })
+      .catch(() => {});
+    const interval = setInterval(() => {
+      if (!loading) refreshHealth();
+    }, 30000);
     return () => clearInterval(interval);
-  }, [refreshHealth, refreshDocuments]);
+  }, [refreshHealth, refreshDocuments, loading]);
 
   useEffect(() => {
     if (saveTimerRef.current) {
@@ -91,7 +101,7 @@ export function AppProvider({ children }) {
         lastAgentRun,
         settings,
       });
-    }, 300);
+    }, 500);
     return () => {
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);

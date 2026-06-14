@@ -30,6 +30,9 @@ async function request(path, options = {}, timeoutMs = 600000) {
 
 export const api = {
   health: () => request("/api/health"),
+  settings: () => request("/api/settings", {}, 10000),
+  updateSettings: (payload) =>
+    request("/api/settings", { method: "PATCH", body: JSON.stringify(payload) }),
   chatStatus: () => request("/api/chat/status", {}, 10000),
   chat: (query, requestId) =>
     request("/api/chat", {

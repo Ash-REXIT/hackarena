@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import asdict
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from agent.agent_service import agent_service
 from agent.job_status import job_tracker
+from agent.runtime_settings import runtime_settings
 from agent.usage_tracker import usage_tracker
 from documents.store import invalidate_index_cache, list_documents_with_meta, save_uploaded_file
 from documents.upload import ALLOWED_EXTENSIONS, extract_text
@@ -110,9 +112,49 @@ class ToggleToolRequest(BaseModel):
     enabled: bool
 
 
+class SettingsUpdateRequest(BaseModel):
+    temperature: float | None = None
+    topK: int | None = None
+    chunkSize: int | None = None
+    internetFallback: bool | None = None
+    internetLimit: int | None = None
+
+
+@router.get("/settings")
+async def get_settings() -> dict:
+    from agent.usage_tracker import usage_tracker
+
+    return {
+        "settings": runtime_settings.snapshot(),
+        "internet_budget": usage_tracker.as_dict(),
+    }
+
+
+@router.patch("/settings")
+async def update_settings(request: SettingsUpdateRequest) -> dict:
+    from agent.usage_tracker import usage_tracker
+
+    payload = request.model_dump(exclude_none=True)
+    old_temp = runtime_settings.snapshot()["temperature"] if "temperature" in payload else None
+    updated = runtime_settings.update(payload)
+    if "internetLimit" in payload:
+        usage_tracker.set_limit(updated["internetLimit"])
+    if (
+        old_temp is not None
+        and abs(updated["temperature"] - old_temp) > 0.001
+    ):
+        await agent_service.reload_agent()
+    from documents.store import invalidate_index_cache
+
+    if "chunkSize" in payload or "topK" in payload:
+        invalidate_index_cache()
+    return {"settings": updated, "internet_budget": usage_tracker.as_dict()}
+
+
 @router.get("/health")
-async def health() -> dict:
-    return agent_service.health()
+async def health(fast: bool = True) -> dict:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: agent_service.health(fast=fast))
 
 
 @router.get("/documents")
