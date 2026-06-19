@@ -1,6 +1,6 @@
 # Shared env loader for start scripts (reads backend/.env)
 param(
-    [string]$EnvFile = "$PSScriptRoot\backend\.env"
+    [string]$EnvFile = (Join-Path (Split-Path $PSScriptRoot -Parent) "backend\.env")
 )
 
 function Get-DotEnvValue {
